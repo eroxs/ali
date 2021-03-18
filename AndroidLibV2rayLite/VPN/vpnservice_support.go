@@ -23,6 +23,7 @@ type resolved struct {
 	domain       string
 	IPs          []net.IP
 	Port         int
+	lastResolved time.Time
 	ipIdx        uint8
 	ipLock       sync.Mutex
 	lastSwitched time.Time
@@ -98,7 +99,7 @@ func (d *ProtectedDialer) PrepareResolveChan() {
 	d.resolveChan = make(chan struct{})
 }
 
-func (d *ProtectedDialer) ResolveChan() <-chan struct{} {
+func (d *ProtectedDialer) ResolveChan() chan struct{} {
 	return d.resolveChan
 }
 
@@ -147,9 +148,10 @@ func (d *ProtectedDialer) lookupAddr(addr string) (*resolved, error) {
 	}
 
 	rs := &resolved{
-		domain: host,
-		IPs:    IPs,
-		Port:   portnum,
+		domain:       host,
+		IPs:          IPs,
+		Port:         portnum,
+		lastResolved: time.Now(),
 	}
 
 	return rs, nil
@@ -161,7 +163,6 @@ func (d *ProtectedDialer) PrepareDomain(domainName string, closeCh <-chan struct
 	d.currentServer = domainName
 	d.preferIPv6 = prefIPv6
 
-	defer close(d.resolveChan)
 	maxRetry := 10
 	for {
 		if maxRetry == 0 {
@@ -223,6 +224,10 @@ func (d *ProtectedDialer) Dial(ctx context.Context,
 			}
 		}
 
+		if time.Now().Sub(d.vServer.lastResolved) > time.Minute * 5 {
+			go d.PrepareDomain(Address, nil)
+		}
+		
 		fd, err := d.getFd(dest.Network)
 		if err != nil {
 			return nil, err
