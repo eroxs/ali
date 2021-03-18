@@ -1,15 +1,14 @@
 package libv2ray
 
-// This struct creates our own log writer without datatime stamp
-// As Android adds time stamps on each line
-
 import (
 	"log"
 	"os"
 
-	v2commlog "v2ray.com/core/common/log"
+	v2commlog "github.com/v2fly/v2ray-core/v4/common/log"
 )
 
+// This struct creates our own log writer without datatime stamp
+// As Android adds time stamps on each line
 type consoleLogWriter struct {
 	logger *log.Logger
 }

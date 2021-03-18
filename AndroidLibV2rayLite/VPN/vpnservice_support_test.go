@@ -9,13 +9,13 @@ import (
 	"testing"
 	"time"
 
-	v2net "v2ray.com/core/common/net"
+	v2net "github.com/v2fly/v2ray-core/v4/common/net"
 )
 
 type fakeSupportSet struct{}
 
-func (f fakeSupportSet) Protect(int) int {
-	return 0
+func (f fakeSupportSet) Protect(int) bool {
+	return true
 }
 
 func TestProtectedDialer_PrepareDomain(t *testing.T) {
@@ -37,7 +37,7 @@ func TestProtectedDialer_PrepareDomain(t *testing.T) {
 	for _, tt := range tests {
 		ch := make(chan struct{})
 		t.Run(tt.name, func(t *testing.T) {
-			go d.PrepareDomain(tt.args.domainName, ch)
+			go d.PrepareDomain(tt.args.domainName, ch, false)
 
 			time.Sleep(time.Second)
 			go d.vServer.NextIP()
@@ -69,7 +69,7 @@ func TestProtectedDialer_Dial(t *testing.T) {
 			d := NewPreotectedDialer(fakeSupportSet{})
 			d.currentServer = tt.name
 
-			go d.PrepareDomain(tt.name, ch)
+			go d.PrepareDomain(tt.name, ch, false)
 
 			var wg sync.WaitGroup
 

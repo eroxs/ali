@@ -7,24 +7,22 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
-	v2net "v2ray.com/core/common/net"
-	v2internet "v2ray.com/core/transport/internet"
+	v2net "github.com/v2fly/v2ray-core/v4/common/net"
+	v2internet "github.com/v2fly/v2ray-core/v4/transport/internet"
 )
 
 type protectSet interface {
-	Protect(int) int
+	Protect(int) bool
 }
 
 type resolved struct {
 	domain       string
 	IPs          []net.IP
 	Port         int
-	lastResolved time.Time
 	ipIdx        uint8
 	ipLock       sync.Mutex
 	lastSwitched time.Time
@@ -57,11 +55,12 @@ func (r *resolved) NextIP() {
 		r.ipIdx = 0
 	}
 
-	cur := r.currentIP()
-	log.Printf("switched to next IP: %s", cur)
+	log.Printf("switched to next IP: %v", r.IPs[r.ipIdx])
 }
 
 func (r *resolved) currentIP() net.IP {
+	r.ipLock.Lock()
+	defer r.ipLock.Unlock()
 	if len(r.IPs) > 0 {
 		return r.IPs[r.ipIdx]
 	}
@@ -83,6 +82,7 @@ func NewPreotectedDialer(p protectSet) *ProtectedDialer {
 type ProtectedDialer struct {
 	currentServer string
 	resolveChan   chan struct{}
+	preferIPv6    bool
 
 	vServer  *resolved
 	resolver *net.Resolver
@@ -98,7 +98,7 @@ func (d *ProtectedDialer) PrepareResolveChan() {
 	d.resolveChan = make(chan struct{})
 }
 
-func (d *ProtectedDialer) ResolveChan() chan struct{} {
+func (d *ProtectedDialer) ResolveChan() <-chan struct{} {
 	return d.resolveChan
 }
 
@@ -136,22 +136,32 @@ func (d *ProtectedDialer) lookupAddr(addr string) (*resolved, error) {
 	for i, ia := range addrs {
 		IPs[i] = ia.IP
 	}
+	// LookupIPAddr returns a slice of IPs with IPv6 addrs in front,
+	// if user perfer not IPv6, revert the result so that IPv4 addr comes first
+	if !d.preferIPv6 && len(IPs) > 1 && IPs[0].To4() == nil && IPs[len(IPs)-1].To4() != nil {
+		for i := len(IPs)/2 - 1; i >= 0; i-- {
+			opp := len(IPs) - 1 - i
+			IPs[i], IPs[opp] = IPs[opp], IPs[i]
+		}
+		log.Printf("PrepareDomain Prefer NOT IPv6 %v\n", IPs)
+	}
 
 	rs := &resolved{
-                domain:       host,
-		IPs:          IPs,
-		Port:         portnum,
-		lastResolved: time.Now(),
+		domain: host,
+		IPs:    IPs,
+		Port:   portnum,
 	}
 
 	return rs, nil
 }
 
 // PrepareDomain caches direct v2ray server host
-func (d *ProtectedDialer) PrepareDomain(domainName string, closeCh <-chan struct{}) {
+func (d *ProtectedDialer) PrepareDomain(domainName string, closeCh <-chan struct{}, prefIPv6 bool) {
 	log.Printf("Preparing Domain: %s", domainName)
 	d.currentServer = domainName
+	d.preferIPv6 = prefIPv6
 
+	defer close(d.resolveChan)
 	maxRetry := 10
 	for {
 		if maxRetry == 0 {
@@ -201,7 +211,7 @@ func (d *ProtectedDialer) Dial(ctx context.Context,
 	// v2ray server address,
 	// try to connect fixed IP if multiple IP parsed from domain,
 	// and switch to next IP if error occurred
-	if strings.Compare(Address, d.currentServer) == 0 {
+	if Address == d.currentServer {
 		if d.vServer == nil {
 			log.Println("Dial pending prepare  ...", Address)
 			<-d.resolveChan
@@ -213,10 +223,6 @@ func (d *ProtectedDialer) Dial(ctx context.Context,
 			}
 		}
 
-		if time.Now().Sub(d.vServer.lastResolved) > time.Minute * 5 {
-			go d.PrepareDomain(Address, nil)
-		}
-		
 		fd, err := d.getFd(dest.Network)
 		if err != nil {
 			return nil, err
@@ -254,7 +260,10 @@ func (d *ProtectedDialer) fdConn(ctx context.Context, ip net.IP, port int, fd in
 	defer unix.Close(fd)
 
 	// call android VPN service to "protect" the fd connecting straight out
-	d.Protect(fd)
+	if !d.Protect(fd) {
+		log.Printf("fdConn fail to protect, Close Fd: %d", fd)
+		return nil, errors.New("fail to protect")
+	}
 
 	sa := &unix.SockaddrInet6{
 		Port: port,
