@@ -72,6 +72,10 @@ func (v *V2RayPoint) RunLoop(prefIPv6 bool) (err error) {
 		v.closeChan = make(chan struct{})
 		v.dialer.PrepareResolveChan()
 		go func() {
+		    v.dialer.PrepareDomain(v.DomainName, v.closeChan)
+		    close(v.dialer.ResolveChan())
+		}()
+		go func() {
 			select {
 			// wait until resolved
 			case <-v.dialer.ResolveChan():
